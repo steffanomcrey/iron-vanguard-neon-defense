@@ -1,79 +1,95 @@
-// The mech the player pilots: movement, firing cadence, shield budget and the
-// invulnerability window after a hit. Reads input, writes its own rect — no
-// rendering decisions live here.
+// The player mech: acceleration + friction steering, shields, invulnerability window.
 
-import { SHIP, BULLET, FIELD } from './config.js';
+import { SHIP, FIELD } from './config.js';
+import { clamp } from './collision.js';
 
 export function createShip() {
   return {
-    x: FIELD.width / 2,
-    y: FIELD.height - 96,
-    width: SHIP.width,
-    height: SHIP.height,
-    shields: SHIP.startShields,
-    cooldown: 0,
-    invulnerable: 0,
-    enginePhase: 0,
+    x: FIELD.w * 0.5,
+    y: FIELD.h - 150,
+    w: SHIP.w,
+    h: SHIP.h,
+    vx: 0,
+    vy: 0,
+    shields: SHIP.shields,
+    maxShields: SHIP.maxShields,
+    fireTimer: 0,
+    invuln: 0,
     alive: true,
+    thrust: 0,
   };
 }
 
 export function shipRect(ship) {
   return {
-    x: ship.x - ship.width / 2,
-    y: ship.y - ship.height / 2,
-    width: ship.width,
-    height: ship.height,
+    x: ship.x - ship.w * 0.5,
+    y: ship.y - ship.h * 0.5,
+    w: ship.w,
+    h: ship.h,
   };
 }
 
-/** Advance the mech one fixed step. Returns the shots fired this step. */
-export function updateShip(ship, input, dt, bullets) {
-  const shots = [];
+export function updateShip(ship, input, dt, field) {
+  const target = input.pointerActive
+    ? clamp(input.pointerX, SHIP.w * 0.5, field.w - SHIP.w * 0.5)
+    : ship.x;
 
-  if (input.left && !input.right) ship.x -= SHIP.speed * dt;
-  else if (input.right && !input.left) ship.x += SHIP.speed * dt;
-  else if (input.pointerX !== null) {
-    // Pointer steering eases toward the cursor so the mech never snaps.
-    const delta = input.pointerX - ship.x;
-    const maxStep = SHIP.speed * dt;
-    ship.x += Math.abs(delta) < maxStep ? delta : Math.sign(delta) * maxStep;
+  let drive = 0;
+  if (input.left && !input.right) drive -= 1;
+  else if (input.right && !input.left) drive += 1;
+
+  if (input.pointerActive && drive === 0) {
+    const delta = target - ship.x;
+    if (Math.abs(delta) > 2) drive = clamp(delta / 120, -1, 1);
   }
 
-  const half = ship.width / 2;
-  ship.x = Math.max(half, Math.min(FIELD.width - half, ship.x));
+  const accel = 4200;
+  const friction = 9.5;
 
-  ship.invulnerable = Math.max(0, ship.invulnerable - dt);
-  ship.cooldown = Math.max(0, ship.cooldown - dt);
-  ship.enginePhase += dt * 18;
-
-  if (input.firing && ship.cooldown === 0 && ship.alive) {
-    ship.cooldown = SHIP.fireCooldown;
-    const muzzle = ship.y - ship.height / 2;
-    for (const offset of [-13, 13]) {
-      const shot = bullets.spawn();
-      if (!shot) break;
-      shot.x = ship.x + offset;
-      shot.y = muzzle - BULLET.height / 2;
-      shot.width = BULLET.width;
-      shot.height = BULLET.height;
-      shot.vy = -BULLET.speed;
-      shot.fromEnemy = false;
-    }
-    shots.push(muzzle);
+  if (drive !== 0) {
+    ship.vx += accel * drive * dt;
   }
 
-  return shots;
+  // Exponential friction keeps steering from feeling like ice.
+  ship.vx -= ship.vx * Math.min(1, friction * dt);
+  ship.vx = clamp(ship.vx, -SHIP.speed, SHIP.speed);
+
+  ship.x += ship.vx * dt;
+
+  const half = SHIP.w * 0.5;
+  if (ship.x < half) {
+    ship.x = half;
+    ship.vx = 0;
+  } else if (ship.x > field.w - half) {
+    ship.x = field.w - half;
+    ship.vx = 0;
+  }
+
+  const halfH = SHIP.h * 0.5;
+  ship.y = clamp(ship.y, halfH + 40, field.h - halfH - 8);
+
+  ship.thrust = clamp(Math.abs(ship.vx) / SHIP.speed, 0, 1);
+
+  ship.fireTimer = Math.max(0, ship.fireTimer - dt);
+  ship.invuln = Math.max(0, ship.invuln - dt);
+
+  return ship;
 }
 
-/** Apply one hit. Returns true when the mech actually lost a shield. */
 export function damageShip(ship) {
-  if (ship.invulnerable > 0 || !ship.alive) return false;
+  if (ship.invuln > 0 || !ship.alive) return false;
   ship.shields -= 1;
-  ship.invulnerable = SHIP.invulnerableAfterHit;
+  ship.invuln = SHIP.invuln;
   if (ship.shields <= 0) {
     ship.shields = 0;
     ship.alive = false;
+    return true;
   }
-  return true;
+  return false;
+}
+
+export function grantShip(ship, shields) {
+  const before = ship.shields;
+  ship.shields = clamp(ship.shields + shields, 0, ship.maxShields);
+  return ship.shields - before;
 }

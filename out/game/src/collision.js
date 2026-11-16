@@ -1,27 +1,30 @@
-// Circle-versus-rectangle and circle-versus-circle overlap tests, plus the
-// small vector helpers the systems share. Kept apart from the systems so the
-// collision rules are readable on their own.
+// Geometry helpers. Deliberately tiny and allocation-light.
 
-export function clamp(value, min, max) {
-  return value < min ? min : value > max ? max : value;
+export function clamp(v, lo, hi) {
+  if (v < lo) return lo;
+  if (v > hi) return hi;
+  return v;
 }
 
-export function circleHitsRect(cx, cy, radius, rect) {
-  const nx = clamp(cx, rect.x, rect.x + rect.width);
-  const ny = clamp(cy, rect.y, rect.y + rect.height);
-  const dx = cx - nx;
-  const dy = cy - ny;
-  return dx * dx + dy * dy <= radius * radius;
+export function circleHitsRect(cx, cy, cr, rect) {
+  const nearestX = clamp(cx, rect.x, rect.x + rect.w);
+  const nearestY = clamp(cy, rect.y, rect.y + rect.h);
+  const dx = cx - nearestX;
+  const dy = cy - nearestY;
+  return dx * dx + dy * dy <= cr * cr;
 }
 
 export function circlesOverlap(ax, ay, ar, bx, by, br) {
   const dx = ax - bx;
   const dy = ay - by;
-  const reach = ar + br;
-  return dx * dx + dy * dy <= reach * reach;
+  const r = ar + br;
+  return dx * dx + dy * dy <= r * r;
 }
 
-/** Distance an entity travels this step; used so fast shots never tunnel. */
-export function travel(speed, dt) {
-  return speed * dt;
+// Apply an entity's per-second velocity for dt seconds.
+export function travel(entity, dt) {
+  if (!entity) return entity;
+  entity.x += (entity.vx || 0) * dt;
+  entity.y += (entity.vy || 0) * dt;
+  return entity;
 }

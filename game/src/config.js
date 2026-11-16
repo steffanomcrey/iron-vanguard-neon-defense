@@ -1,111 +1,108 @@
-// Every tuning number, colour and layout constant for Iron Vanguard.
-// One place to balance the game: no magic numbers live in the systems.
-// The playfield is a fixed logical area the renderer scales to any window.
+// Tunable constants for Iron Vanguard: Neon Defense.
+// Everything frozen so a running match cannot drift the rules out from under itself.
 
-export const FIELD = { width: 1280, height: 720 };
+export const FIELD = Object.freeze({ w: 1280, h: 720 });
 
-/** The simulation runs at a fixed 60 Hz whatever the display refresh rate is. */
 export const STEP = 1 / 60;
 
-/** Player mech: a nimble craft that shoots upward and banks shield charge. */
-export const SHIP = {
-  width: 54,
-  height: 62,
+export const SHIP = Object.freeze({
+  w: 54,
+  h: 62,
   speed: 620,
   fireCooldown: 0.16,
-  invulnerableAfterHit: 1.8,
-  startShields: 3,
+  invuln: 1.8,
+  shields: 3,
   maxShields: 5,
-};
+  hitRadius: 18,
+});
 
-/** Bullets the mech fires. Pooled; the pool is allocated once at boot. */
-export const BULLET = {
-  width: 6,
-  height: 20,
+export const BULLET = Object.freeze({
+  w: 9,
+  h: 30,
   speed: 1180,
+  poolSize: 96,
+  radius: 7,
   damage: 1,
-  poolSize: 96,
-};
+});
 
-/** Drone swarm: three archetypes with distinct silhouettes, speeds and value.
- *  Enemy hues deliberately stay off the cyan the mech, its bullets and its
- *  pickups own: a player must never confuse a hostile with a friendly bolt. */
-export const DRONE = {
-  poolSize: 128,
-  kinds: {
-    scout:    { hp: 1, speed: 132, points: 40,  radius: 20, colour: '#ff6ec7', weave: 150 },
-    striker:  { hp: 2, speed: 188, points: 90,  radius: 24, colour: '#ff7a45', weave: 40 },
-    bulwark:  { hp: 5, speed: 84,  points: 260, radius: 34, colour: '#c168ff', weave: 0 },
-  },
-  fireInterval: { scout: 2.6, striker: 1.9, bulwark: 1.4 },
-  bulletSpeed: 260,
-};
-
-/** Enemy shots: slow, fat and lake-red, so they never read as a star or a
- *  friendly laser against the dark floor. */
-export const ENEMY_BULLET = {
+export const ENEMY_BULLET = Object.freeze({
   poolSize: 96,
-  radius: 10,
+  radius: 15,
   speed: 300,
-};
+  damage: 1,
+});
 
-/** Waves ramp difficulty step by step and give the player a breather between them. */
-export const WAVE = {
+export const DRONE = Object.freeze({
+  poolSize: 128,
+  kinds: Object.freeze({
+    // Drone hues are split by ARCHETYPE so the player reads threat class by colour alone:
+    // scout = cool magenta/pink, striker = amber/orange, bulwark = violet. None of them may be
+    // cyan (the mech's own fire) and none may be red (reserved for incoming fire).
+    // Weaves wide, dies to one hit, rarely fires.
+    scout: Object.freeze({
+      hp: 1,
+      speed: 150,
+      radius: 20,
+      score: 100,
+      fireInterval: 2.6,
+      colour: '#ff4fd8',
+      weave: 46,
+    }),
+    // Presses straight in, fires steadily.
+    striker: Object.freeze({
+      hp: 3,
+      speed: 105,
+      radius: 24,
+      score: 250,
+      fireInterval: 1.9,
+      colour: '#ffa62b',
+      weave: 22,
+    }),
+    // Slow, soaks hits, worth the most.
+    bulwark: Object.freeze({
+      hp: 5,
+      speed: 62,
+      radius: 32,
+      score: 420,
+      fireInterval: 1.4,
+      colour: '#a259ff',
+      weave: 10,
+    }),
+  }),
+});
+
+export const WAVES = Object.freeze({
   count: 10,
-  firstSeed: 1337,
-  breatherSeconds: 3.2,
-  bannerSeconds: 2.1,
-  spawnBase: 4,
-  spawnPerWave: 2,
-  bulwarkFrom: 3,
-  strikerFrom: 2,
-};
+  breather: 2.4,
+  baseCount: 5,
+});
 
-/** Pickups: shield cells restore defence, cores are pure score. */
-export const PICKUP = {
-  poolSize: 32,
-  chance: 0.14,
-  radius: 16,
-  speed: 120,
-  shieldPoints: 0,
-  corePoints: 500,
-};
+export const PICKUPS = Object.freeze({
+  poolSize: 24,
+  fallSpeed: 130,
+  radius: 14,
+});
 
-/** Particle bursts for impacts, explosions and engine trails. */
-export const PARTICLE = {
-  poolSize: 512,
-  gravity: 190,
-  drag: 0.985,
-};
+export const PARTICLES = Object.freeze({
+  poolSize: 320,
+  life: 0.55,
+});
 
-export const SCORE = {
-  waveClear: 1000,
-  shieldPerfect: 2500,
-  survivalPerSecond: 12,
-};
-
-/** One coherent palette so every screen reads as the same machine. */
-export const PALETTE = {
-  void: '#05060c',
-  deep: '#0a0f1e',
-  grid: '#12203a',
-  horizon: '#1b3a6b',
-  hull: '#e8f4ff',
-  accent: '#4fd6ff',
-  accentWarm: '#ffb347',
-  danger: '#ff4d6d',
+// Cyan is reserved for the player's mech, its bolts and its pickups. No hostile uses it.
+export const PALETTE = Object.freeze({
+  bg: '#05070f',
+  deep: '#0a1430',
+  // Deck lines are BLUE-VIOLET and sit under everything, so no gameplay object can be mistaken
+  // for scenery and the grid never competes with the player's fire.
+  grid: '#4a7ae0',
+  horizon: '#5f8ef0',
+  // Cyan is reserved: the mech, its bolts and the HUD. Nothing hostile may use it.
+  accent: '#5ff2ff',
+  accentDim: '#2e8f9e',
+  ink: '#eaf6ff',
+  muted: '#8fa8c9',
+  // Hot red is reserved for incoming fire. Nothing else in the game may be red.
+  danger: '#ff2e40',
+  good: '#57e6a0',
   gold: '#ffd166',
-  health: '#63f7d2',
-  text: '#eaf4ff',
-  muted: '#5d7ba6',
-  panel: 'rgba(10, 18, 34, 0.82)',
-  panelEdge: 'rgba(79, 214, 255, 0.35)',
-};
-
-export const FONT = {
-  display: '"Segoe UI", system-ui, -apple-system, sans-serif',
-  mono: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
-};
-
-/** Where the best score is remembered in this browser. */
-export const BEST_KEY = 'iron-vanguard.best';
+});

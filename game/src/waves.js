@@ -1,101 +1,106 @@
-// The wave director: decides what spawns, when, and how hard each wave hits.
-// Difficulty is a single curve rather than scattered constants, so the ramp can
-// be retuned in one line and the whole run stays fair.
+// Wave director: composition, spawn queue, drain timer, progress.
 
-import { WAVE, DRONE, FIELD } from './config.js';
+import { WAVES, FIELD } from './config.js';
 import { spawnDrone } from './drones.js';
-import { randomInt } from './random.js';
+
+export function waveComposition(wave) {
+  const n = Math.max(1, Math.min(WAVES.count, Math.floor(wave) || 1));
+
+  // Roughly 5 drones on wave 1 growing to about 22 on wave 10.
+  const total = Math.round(WAVES.baseCount + (n - 1) * 1.9);
+
+  const list = [];
+  for (let i = 0; i < total; i += 1) {
+    if (n <= 2) {
+      list.push('scout');
+      continue;
+    }
+
+    // Deeper waves trade scouts for the heavy archetypes.
+    const strikerFrom = 2.5;
+    const bulwarkFrom = 5.5;
+
+    if (n >= bulwarkFrom && i % Math.max(3, 9 - Math.floor(n / 2)) === 0) {
+      list.push('bulwark');
+    } else if (n >= strikerFrom && i % 3 !== 1) {
+      list.push('striker');
+    } else {
+      list.push('scout');
+    }
+  }
+
+  return list;
+}
 
 export function createDirector(rand) {
   return {
-    rand,
-    wave: 0,
-    pending: [],
+    wave: 1,
+    remaining: 0,
+    spawnQueue: [],
     timer: 0,
-    state: 'breather',
-    stateTimer: WAVE.breatherSeconds,
-    elapsed: 0,
+    breather: WAVES.breather,
     totalInWave: 0,
     progress: 0,
+    cleared: false,
+    rand,
   };
 }
 
-/** How many drones wave N sends, and in what mix. */
-export function waveComposition(wave) {
-  const total = WAVE.spawnBase + WAVE.spawnPerWave * wave;
-  const mix = [];
-  for (let i = 0; i < total; i += 1) {
-    if (wave >= WAVE.bulwarkFrom && i % 6 === 5) mix.push('bulwark');
-    else if (wave >= WAVE.strikerFrom && i % 3 === 2) mix.push('striker');
-    else mix.push('scout');
-  }
-  return mix;
-}
-
-export function beginWave(director, pool) {
-  director.wave += 1;
-  director.state = 'active';
-  director.stateTimer = 0;
-  director.timer = 0;
-
-  const mix = waveComposition(director.wave);
-  director.totalInWave = mix.length;
+export function beginWave(director, wave) {
+  const w = Math.max(1, Math.min(WAVES.count, Math.floor(wave) || 1));
+  director.wave = w;
+  director.spawnQueue = waveComposition(w);
+  director.totalInWave = director.spawnQueue.length;
+  director.remaining = director.spawnQueue.length;
   director.progress = 0;
-  const span = FIELD.width - 240;
-  director.pending = mix.map((kind, index) => {
-    const spec = DRONE.kinds[kind];
-    const x = 120 + (span * (index + 0.5)) / mix.length;
-    return { kind, x, delay: index * 0.42, radius: spec.radius };
-  });
-  void pool;
+  director.breather = 0;
+  director.cleared = false;
+  // First drop is quick, then the queue drains on a per-drone timer.
+  director.timer = 0.35;
+  return director;
 }
 
-/** Spawn due drones and report whether the wave is finished. */
-export function advanceDirector(director, pool, dt) {
-  director.elapsed += dt;
-  director.timer += dt;
+export function completeWave(director) {
+  director.breather = WAVES.breather;
+  director.progress = 0;
+  director.cleared = true;
+  director.spawnQueue.length = 0;
+  director.remaining = 0;
+  return director;
+}
 
-  if (director.state === 'breather') {
-    director.stateTimer -= dt;
-    director.progress = 0;
-    if (director.stateTimer <= 0) {
-      beginWave(director, pool);
-      return { started: director.wave, cleared: 0, finished: false };
+export function advanceDirector(director, dt) {
+  let spawned = 0;
+
+  if (director.breather > 0) {
+    director.breather = Math.max(0, director.breather - dt);
+    return spawned;
+  }
+
+  if (director.spawnQueue.length > 0) {
+    director.timer -= dt;
+    if (director.timer <= 0) {
+      const kind = director.spawnQueue.shift();
+      const spread = FIELD.w - 160;
+      const x = 80 + director.rand.next() * spread;
+      const y = -60 - director.rand.range(0, 40);
+      const drone = spawnDrone(director.pool, kind, x, y, director.rand);
+      if (drone) {
+        spawned += 1;
+        // Pace tightens slightly as the waves go on.
+        const pace = Math.max(0.14, 0.62 - director.wave * 0.035);
+        director.timer = pace + director.rand.range(0, pace * 0.6);
+      } else {
+        director.timer = 0.2;
+      }
     }
-    return { started: 0, cleared: 0, finished: false };
   }
 
-  while (director.pending.length && director.pending[0].delay <= director.timer) {
-    const next = director.pending.shift();
-    spawnDrone(pool, next.kind, next.x, -next.radius - 20, director.rand);
+  if (director.totalInWave > 0) {
+    const killed = director.totalInWave - director.remaining;
+    director.progress = Math.max(0, Math.min(1, killed / director.totalInWave));
+    if (director.progress >= 1) director.progress = 1;
   }
 
-  // Fraction of this wave already destroyed, for the HUD threat bar.
-  const queued = director.totalInWave || 0;
-  const remaining = director.pending.length + pool.countActive();
-  director.progress = queued > 0 ? Math.min(1, (queued - remaining) / queued) : 0;
-
-  if (director.pending.length === 0 && pool.countActive() === 0) {
-    const cleared = director.wave;
-    director.state = 'breather';
-    director.stateTimer = WAVE.breatherSeconds;
-    director.timer = 0;
-    director.progress = 1;
-    return { started: 0, cleared, finished: director.wave >= WAVE.count };
-  }
-
-  return { started: 0, cleared: 0, finished: false };
+  return spawned;
 }
-
-/** Debris carried by a random-free scatter used after a kill. */
-export function killScatter(rand, x, y, count) {
-  const out = [];
-  for (let i = 0; i < count; i += 1) {
-    const angle = rand() * Math.PI * 2;
-    const speed = 60 + rand() * 260;
-    out.push({ x, y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed });
-  }
-  return out;
-}
-
-export { randomInt };

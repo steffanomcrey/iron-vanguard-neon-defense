@@ -1,42 +1,38 @@
-// Object pools for bullets, enemies, particles and pickups.
-// Everything is allocated up front, so a long run never triggers a garbage
-// collection spike mid-wave — the frame time stays flat however busy it gets.
+// Fixed-size object pools. No allocation during play, no GC hitches mid-wave.
 
 export function createPool(size, make) {
-  const items = new Array(size);
+  const items = [];
   for (let i = 0; i < size; i += 1) {
-    items[i] = make();
-    items[i].active = false;
+    const item = make();
+    item.active = false;
+    items.push(item);
   }
-  return {
-    items,
-    /** Hand back the next free slot, or null when the pool is exhausted. */
-    spawn() {
-      for (let i = 0; i < items.length; i += 1) {
-        if (!items[i].active) {
-          items[i].active = true;
-          return items[i];
-        }
+
+  function spawn(...args) {
+    for (let i = 0; i < items.length; i += 1) {
+      const item = items[i];
+      if (!item.active) {
+        item.active = true;
+        if (typeof item.reset === 'function') item.reset(...args);
+        return item;
       }
-      return null;
-    },
-    forEachActive(fn) {
-      for (let i = 0; i < items.length; i += 1) {
-        if (items[i].active) fn(items[i]);
-      }
-    },
-    countActive() {
-      let n = 0;
-      for (let i = 0; i < items.length; i += 1) if (items[i].active) n += 1;
-      return n;
-    },
-    clear() {
-      for (let i = 0; i < items.length; i += 1) items[i].active = false;
-    },
-  };
+    }
+    return null;
+  }
+
+  function countActive() {
+    let n = 0;
+    for (let i = 0; i < items.length; i += 1) if (items[i].active) n += 1;
+    return n;
+  }
+
+  function releaseAll() {
+    for (let i = 0; i < items.length; i += 1) items[i].active = false;
+  }
+
+  return { items, size: items.length, spawn, countActive, releaseAll };
 }
 
-/** Randomised spawn helper used by the wave director and the pickup table. */
 export function jitter(rand, amount) {
-  return (rand() * 2 - 1) * amount;
+  return rand.range(-amount, amount);
 }

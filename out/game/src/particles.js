@@ -1,38 +1,64 @@
-// Particle bursts: one short-lived struct used for engine trails, muzzle
-// flashes, shield breaks and drone explosions. All additive, all cheap, and
-// pooled so even a ten-wave finale stays inside the frame budget.
+// Debris. Small, cheap, additive-blended.
 
-import { PARTICLE } from './config.js';
+import { PARTICLES } from './config.js';
 
-export function emitBurst(pool, x, y, count, colour, speed, spread = Math.PI * 2, heading = 0) {
-  for (let i = 0; i < count; i += 1) {
+export function emitBurst(pool, x, y, count, colour, rand) {
+  const n = Math.max(0, Math.floor(count));
+  let emitted = 0;
+
+  for (let i = 0; i < n; i += 1) {
     const p = pool.spawn();
-    if (!p) return;
-    const angle = heading + (Math.random() - 0.5) * spread;
-    const velocity = speed * (0.35 + Math.random() * 0.65);
+    if (!p) break;
+
+    const angle = rand.range(0, Math.PI * 2);
+    const speed = rand.range(60, 320);
+
     p.x = x;
     p.y = y;
-    p.vx = Math.cos(angle) * velocity;
-    p.vy = Math.sin(angle) * velocity;
-    p.life = 1;
-    p.decay = 1.1 + Math.random() * 1.4;
-    p.size = 2 + Math.random() * 3.2;
+    p.vx = Math.cos(angle) * speed;
+    p.vy = Math.sin(angle) * speed;
+    p.life = PARTICLES.life * rand.range(0.6, 1.25);
+    p.maxLife = p.life;
+    p.size = rand.range(1.4, 3.6);
     p.colour = colour;
+    p.active = true;
+    emitted += 1;
   }
+
+  return emitted;
 }
 
 export function updateParticle(p, dt) {
+  if (!p.active) return p;
+
+  p.life -= dt;
+  if (p.life <= 0) {
+    p.active = false;
+    return p;
+  }
+
   p.x += p.vx * dt;
   p.y += p.vy * dt;
-  p.vx *= PARTICLE.drag;
-  p.vy = p.vy * PARTICLE.drag + PARTICLE.gravity * dt;
-  p.life -= dt * p.decay;
+
+  // Drag plus a whisper of gravity so debris settles rather than drifting forever.
+  const drag = Math.min(1, 2.6 * dt);
+  p.vx -= p.vx * drag;
+  p.vy -= p.vy * drag;
+  p.vy += 26 * dt;
+
+  return p;
 }
 
 export function drawParticle(ctx, p) {
-  const alpha = p.life < 0 ? 0 : p.life;
-  ctx.globalAlpha = alpha * 0.9;
+  if (!p.active || p.life <= 0) return;
+
+  const t = Math.max(0, Math.min(1, p.life / p.maxLife));
+
+  ctx.globalAlpha = t * 0.95;
   ctx.fillStyle = p.colour;
-  const size = p.size * (0.4 + alpha * 0.6);
-  ctx.fillRect(p.x - size / 2, p.y - size / 2, size, size);
+  const r = p.size * (0.4 + t * 0.8);
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = 1;
 }

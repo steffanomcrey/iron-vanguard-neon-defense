@@ -1,333 +1,255 @@
-// Boot and the fixed-step loop. The simulation always advances in 1/60 s
-// slices no matter the display refresh rate, so physics and scoring behave
-// identically on a 60 Hz laptop, a 144 Hz monitor and a headless screenshot
-// run — which is what keeps a captured frame reproducible.
+// Bootstrap: canvas sizing, fixed-step loop, input wiring, debug hooks.
 
-import { STEP, FIELD, SHIP, BULLET, DRONE, ENEMY_BULLET, PICKUP, PARTICLE, BEST_KEY } from './config.js';
+import { FIELD, STEP } from './config.js';
 import { createInput } from './input.js';
-import { createPool } from './pools.js';
-import { createRandom } from './random.js';
-import { createShip, updateShip, damageShip, shipRect } from './ship.js';
-import { updateDrone, hitDrone, aimAt } from './drones.js';
-import { createDirector, advanceDirector } from './waves.js';
-import { createScore, updateScore, registerKill, completeWave, resetWaveWatch, rollPickup } from './score.js';
-import { spawnPickup, updatePickup, pickupTouchesShip } from './pickups.js';
-import { emitBurst, updateParticle } from './particles.js';
-import { circlesOverlap, circleHitsRect } from './collision.js';
-import { createRenderer, fitCanvas, drawWorld } from './render.js';
-import { drawHud } from './hud.js';
-import { drawOverlays } from './screens.js';
+import { Engine } from './engine.js';
+import { formatTime } from './hud.js';
 import { readShotPose, applyShotPose } from './shots.js';
-import { PALETTE } from './config.js';
 
-const canvas = document.getElementById('game');
-const statusLine = document.getElementById('status');
-
-/** Screenshot poses hold the world still, so a captured frame never drifts. */
-const shotPose = readShotPose();
+const MAX_FRAME_DT = 0.25;
 
 function readSeed() {
-  const params = new URLSearchParams(window.location.search);
+  if (typeof window === 'undefined' || !window.location) return 0x9e3779b9;
+  const params = new URLSearchParams(window.location.search || '');
   const raw = params.get('seed');
-  const parsed = raw === null ? NaN : Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) ? parsed : 20260101;
+  if (raw === null) return 0x9e3779b9;
+  const asNumber = Number(raw);
+  return Number.isFinite(asNumber) && raw.trim() !== '' ? asNumber : raw;
 }
 
-function readBest() {
-  try {
-    return Number.parseInt(window.localStorage.getItem(BEST_KEY) || '0', 10) || 0;
-  } catch {
-    return 0;
-  }
+function fatal(message) {
+  if (typeof document === 'undefined') return;
+  const el = document.getElementById('status');
+  if (el) el.textContent = `Iron Vanguard failed to start: ${message}`;
 }
 
-function writeBest(value) {
-  try {
-    window.localStorage.setItem(BEST_KEY, String(value));
-  } catch {
-    /* storage can be blocked in private windows; the score still counts. */
-  }
-}
-
-const renderer = createRenderer(canvas);
-const rand = createRandom(readSeed());
-const input = createInput(canvas, FIELD);
-
-const world = {
-  mode: 'title',
-  elapsed: 0,
-  ship: createShip(),
-  bullets: createPool(BULLET.poolSize, () => ({})),
-  drones: createPool(DRONE.poolSize, () => ({})),
-  pickups: createPool(PICKUP.poolSize, () => ({})),
-  particles: createPool(PARTICLE.poolSize, () => ({})),
-  director: createDirector(rand),
-  score: createScore(),
-  rand,
-};
-
-world.score.best = readBest();
-
-function announce(text) {
-  if (statusLine) statusLine.textContent = text;
-}
-
-function resetWorld() {
-  world.ship = createShip();
-  world.bullets.clear();
-  world.drones.clear();
-  world.pickups.clear();
-  world.particles.clear();
-  world.director = createDirector(rand);
-  world.score = createScore();
-  world.score.best = readBest();
-  world.elapsed = 0;
-  resetWaveWatch(world.score, world.ship.shields);
-  announce('Wave 1 incoming. Three shields.');
-}
-
-function startRun() {
-  resetWorld();
-  world.mode = 'playing';
-}
-
-function fireEnemyShot(drone) {
-  const shot = world.bullets.spawn();
-  if (!shot) return;
-  const aim = aimAt(drone, world.ship.x, world.ship.y);
-  shot.x = drone.x;
-  shot.y = drone.y + drone.radius;
-  shot.width = ENEMY_BULLET.radius * 2;
-  shot.height = ENEMY_BULLET.radius * 2;
-  shot.vx = aim.dx * ENEMY_BULLET.speed;
-  shot.vy = aim.dy * ENEMY_BULLET.speed;
-  shot.fromEnemy = true;
-}
-
-function explodeDrone(drone) {
-  emitBurst(world.particles, drone.x, drone.y, drone.kind === 'bulwark' ? 26 : 14,
-    DRONE.kinds[drone.kind].colour, 340);
-  registerKill(world.score, drone.points, drone.x, drone.y);
-
-  const drop = rollPickup(rand, world.ship.shields, drone.x, drone.y);
-  if (drop) spawnPickup(world.pickups, drop);
-}
-
-function stepBullets(dt) {
-  world.bullets.forEachActive((b) => {
-    b.x += (b.vx || 0) * dt;
-    b.y += b.vy * dt;
-    if (b.y < -40 || b.y > FIELD.height + 40 || b.x < -40 || b.x > FIELD.width + 40) {
-      b.active = false;
-    }
+export function createGame(canvas, options = {}) {
+  const engine = new Engine(canvas, {
+    seed: options.seed !== undefined ? options.seed : readSeed(),
+    input: null,
   });
+
+  const input = createInput(canvas, FIELD);
+  engine.input = input;
+
+  function trigger(type) {
+    engine.handleEvent({ type });
+  }
+
+  // Keyboard events drive menu transitions; the input module owns movement and fire.
+  const keyBridge = (e) => {
+    if (e.code === 'Space' || e.code === 'Enter') {
+      trigger(`keydown:${e.code === 'Enter' ? 'Enter' : 'Space'}`);
+      if (e.preventDefault) e.preventDefault();
+    } else if (e.code === 'Escape' || e.code === 'KeyP') {
+      trigger(`keydown:${e.code}`);
+      if (e.preventDefault) e.preventDefault();
+    }
+  };
+
+  let downAt = 0;
+  const pointerBridge = (e) => {
+    if (engine.state === 'playing') return;
+    downAt = performance.now();
+    trigger('pointerdown:start');
+    void e;
+  };
+
+  return { engine, input, keyBridge, pointerBridge, downAt };
 }
 
-function resolveBulletHits() {
-  const shipBox = shipRect(world.ship);
+export function start(canvas, options = {}) {
+  const ctx = canvas.getContext('2d');
 
-  world.bullets.forEachActive((b) => {
-    if (b.fromEnemy) {
-      if (circleHitsRect(b.x, b.y, 7, shipBox) && damageShip(world.ship)) {
-        b.active = false;
-        emitBurst(world.particles, b.x, b.y, 16, PALETTE.danger, 300);
-        announce(`Shield hit. ${world.ship.shields} left.`);
-        if (!world.ship.alive) endRun();
-      }
+  const engine = new Engine(canvas, {
+    seed: options.seed !== undefined ? options.seed : readSeed(),
+    input: null,
+  });
+
+  const input = createInput(canvas, FIELD);
+  engine.input = input;
+  input.attach(window);
+
+  // A requested screenshot pose replaces the live game with a frozen stage: every frame
+  // rebuilds the pose and paints it, and nothing is stepped or drawn at random. This is how
+  // the entry's captures are produced, so they are reproducible rather than lucky.
+  const shotPose = options.shot !== undefined ? options.shot : readShotPose();
+
+  let raf = 0;
+  let last = performance.now();
+  let accumulator = 0;
+  let running = true;
+
+  function bridgeKey(e) {
+    if (e.code === 'Space' || e.code === 'Enter') {
+      engine.handleEvent({ type: 'keydown:Space' });
+      if (e.preventDefault) e.preventDefault();
+    } else if (e.code === 'Escape' || e.code === 'KeyP') {
+      engine.handleEvent({ type: `keydown:${e.code}` });
+      if (e.preventDefault) e.preventDefault();
+    }
+  }
+
+  function bridgePointer(e) {
+    if (engine.state === 'playing') return;
+    engine.handleEvent({ type: 'pointerdown:start' });
+    void e;
+  }
+
+  window.addEventListener('keydown', bridgeKey);
+  canvas.addEventListener('pointerdown', bridgePointer);
+
+  function frame(now) {
+    if (!running) return;
+
+    let dt = (now - last) / 1000;
+    last = now;
+
+    if (!Number.isFinite(dt) || dt < 0) dt = 0;
+    if (dt > MAX_FRAME_DT) dt = MAX_FRAME_DT;
+
+    if (shotPose) {
+      applyShotPose(engine, shotPose);
+      engine.render();
+      updateStatus(engine);
+      raf = window.requestAnimationFrame(frame);
       return;
     }
 
-    world.drones.forEachActive((drone) => {
-      if (!b.active) return;
-      if (circlesOverlap(b.x, b.y, 4, drone.x, drone.y, drone.radius)) {
-        b.active = false;
-        emitBurst(world.particles, b.x, b.y, 4, '#bff2ff', 180);
-        if (hitDrone(drone, BULLET.damage)) {
-          drone.active = false;
-          explodeDrone(drone);
-        }
-      }
-    });
-  });
+    accumulator += dt;
+
+    let steps = 0;
+    while (accumulator >= STEP && steps < 6) {
+      engine.update(STEP);
+      accumulator -= STEP;
+      steps += 1;
+    }
+
+    if (steps === 0 && engine.state !== 'playing') {
+      engine.update(Math.min(dt, STEP));
+    }
+
+    engine.render();
+    updateStatus(engine);
+
+    raf = window.requestAnimationFrame(frame);
+  }
+
+  raf = window.requestAnimationFrame(frame);
+
+  const handle = {
+    engine,
+    input,
+    stop() {
+      running = false;
+      window.cancelAnimationFrame(raf);
+      window.removeEventListener('keydown', bridgeKey);
+      canvas.removeEventListener('pointerdown', bridgePointer);
+      input.detach(window);
+    },
+  };
+
+  return handle;
 }
 
-function resolveDroneCollisions() {
-  const shipBox = shipRect(world.ship);
-  world.drones.forEachActive((drone) => {
-    if (drone.y - drone.radius > FIELD.height + 40) {
-      drone.active = false;
-      return;
-    }
-    if (circleHitsRect(drone.x, drone.y, drone.radius * 0.8, shipBox) && damageShip(world.ship)) {
-      drone.active = false;
-      emitBurst(world.particles, drone.x, drone.y, 20, DRONE.kinds[drone.kind].colour, 320);
-      announce(`Hull breach. ${world.ship.shields} shields left.`);
-      if (!world.ship.alive) endRun();
-    }
-  });
+let lastStatus = '';
+
+function updateStatus(engine) {
+  if (typeof document === 'undefined') return;
+  const el = document.getElementById('status');
+  if (!el) return;
+
+  let text;
+  const snap = engine.snapshot();
+
+  switch (snap.state) {
+    case 'title':
+      text = 'Iron Vanguard: Neon Defense \u2014 press Space to begin.';
+      break;
+    case 'playing':
+      text = `Wave ${snap.wave}/${snap.wavesTotal} \u00b7 score ${snap.score} \u00b7 integrity ${snap.shields} \u00b7 ${formatTime(snap.elapsed)}`;
+      break;
+    case 'paused':
+      text = 'Paused \u2014 press Esc to resume.';
+      break;
+    case 'gameover':
+      text = `Mech down \u2014 score ${snap.final ? snap.final.score : snap.score} \u00b7 press Space to redeploy.`;
+      break;
+    case 'victory':
+      text = `Sector secured \u2014 score ${snap.final ? snap.final.score : snap.score} \u00b7 press Space for a new run.`;
+      break;
+    default:
+      text = 'Iron Vanguard: Neon Defense';
+  }
+
+  if (text !== lastStatus) {
+    lastStatus = text;
+    el.textContent = text;
+  }
 }
 
-function resolvePickups() {
-  world.pickups.forEachActive((item) => {
-    if (item.y > FIELD.height + 30) {
-      item.active = false;
-      return;
-    }
-    if (!pickupTouchesShip(item, world.ship)) return;
-    item.active = false;
-    if (item.kind === 'shield') {
-      world.ship.shields = Math.min(SHIP.maxShields, world.ship.shields + 1);
-      registerKill(world.score, 120, item.x, item.y);
-      emitBurst(world.particles, item.x, item.y, 12, PALETTE.health, 220);
-      announce(`Shield cell collected. ${world.ship.shields} of ${SHIP.maxShields}.`);
-    } else {
-      registerKill(world.score, 500, item.x, item.y);
-      emitBurst(world.particles, item.x, item.y, 12, PALETTE.gold, 220);
-    }
-  });
-}
+function boot() {
+  if (typeof document === 'undefined') return;
 
-function endRun() {
-  if (world.score.total > world.score.best) {
-    world.score.best = world.score.total;
-    writeBest(world.score.best);
-  }
-  world.mode = 'gameover';
-  announce(`Mech destroyed. Final score ${world.score.total}.`);
-}
-
-function stepWorld(dt) {
-  world.elapsed += dt;
-
-  const state = input.sample();
-  updateShip(world.ship, state, dt, world.bullets);
-  if (world.ship.cooldown === SHIP.fireCooldown) {
-    emitBurst(world.particles, world.ship.x, world.ship.y - 30, 2, PALETTE.accent, 90, 0.9, -Math.PI / 2);
-  }
-
-  const result = advanceDirector(world.director, world.drones, dt);
-  if (result.started) {
-    resetWaveWatch(world.score, world.ship.shields);
-    announce(`Wave ${result.started}. ${world.drones.countActive()} contacts.`);
-  }
-  if (result.cleared) {
-    const bonus = completeWave(world.score, result.cleared, world.ship.shields);
-    announce(bonus.perfect
-      ? `Wave ${result.cleared} cleared with no damage. Bonus ${bonus.bonus}.`
-      : `Wave ${result.cleared} cleared.`);
-    if (result.finished) {
-      world.mode = 'victory';
-      if (world.score.total > world.score.best) {
-        world.score.best = world.score.total;
-        writeBest(world.score.best);
-      }
-      return;
-    }
-  }
-
-  world.drones.forEachActive((drone) => {
-    const shot = updateDrone(drone, dt, world.elapsed);
-    if (shot) fireEnemyShot(drone);
-  });
-
-  stepBullets(dt);
-  resolveBulletHits();
-  resolveDroneCollisions();
-
-  world.pickups.forEachActive((item) => updatePickup(item, dt));
-  resolvePickups();
-
-  world.particles.forEachActive((p) => updateParticle(p, dt));
-  world.particles.forEachActive((p) => {
-    if (p.life <= 0) p.active = false;
-  });
-
-  updateScore(world.score, dt);
-}
-
-function onActionKey(code) {
-  if (code === 'Space' && (world.mode === 'title' || world.mode === 'gameover' || world.mode === 'victory')) {
-    startRun();
-    return true;
-  }
-  if (code === 'KeyR' && world.mode !== 'playing') {
-    startRun();
-    return true;
-  }
-  if (code === 'KeyP') {
-    if (world.mode === 'playing') {
-      world.mode = 'paused';
-      announce('Paused.');
-    } else if (world.mode === 'paused') {
-      world.mode = 'playing';
-      announce('Resumed.');
-    }
-    return true;
-  }
-  if (code === 'KeyR' && world.mode === 'paused') {
-    startRun();
-    return true;
-  }
-  if (world.mode === 'title' && (code === 'Enter' || code === 'Space')) {
-    startRun();
-    return true;
-  }
-  return false;
-}
-
-window.addEventListener('keydown', (event) => {
-  if (onActionKey(event.code)) event.preventDefault();
-});
-
-let accumulator = 0;
-let lastTime = performance.now();
-
-function frame(now) {
-  const delta = Math.min((now - lastTime) / 1000, 0.25);
-  lastTime = now;
-
-  if (shotPose) {
-    // A captured frame is a still photograph: the pose is rebuilt every frame
-    // so nothing drifts, then painted once. No stepping, no randomness.
-    applyShotPose(world, shotPose);
-    drawWorld(renderer, world);
-    drawHud(renderer, world);
-    drawOverlays(renderer, world);
-    requestAnimationFrame(frame);
+  const canvas = document.getElementById('game');
+  if (!canvas) {
+    fatal('canvas element #game not found');
     return;
   }
 
-  if (world.mode === 'playing') {
-    accumulator += delta;
-    let guard = 0;
-    while (accumulator >= STEP && guard < 8) {
-      stepWorld(STEP);
-      accumulator -= STEP;
-      guard += 1;
-      if (world.mode !== 'playing') {
-        accumulator = 0;
-        break;
-      }
-    }
-  } else {
-    world.elapsed += delta;
-    world.particles.forEachActive((p) => updateParticle(p, delta));
-    world.particles.forEachActive((p) => {
-      if (p.life <= 0) p.active = false;
-    });
+  canvas.width = FIELD.w;
+  canvas.height = FIELD.h;
+  canvas.tabIndex = 0;
+
+  let handle;
+  try {
+    handle = start(canvas);
+  } catch (err) {
+    fatal(err && err.message ? err.message : 'unknown error');
+    return;
   }
 
-  drawWorld(renderer, world);
-  drawHud(renderer, world);
-  drawOverlays(renderer, world);
-  requestAnimationFrame(frame);
+  // Debug surface: stays quiet for players, gives tests a deterministic hook.
+  const debug = {
+    engine: handle.engine,
+    snapshot: () => handle.engine.snapshot(),
+    seed: handle.engine.seed,
+    step(n = 1) {
+      for (let i = 0; i < n; i += 1) handle.engine.update(STEP);
+    },
+    run(seconds) {
+      const steps = Math.max(0, Math.floor(seconds / STEP));
+      for (let i = 0; i < steps; i += 1) handle.engine.update(STEP);
+      return handle.engine.snapshot();
+    },
+    start() {
+      handle.engine.reset();
+      handle.engine.state = 'playing';
+      return handle.engine.snapshot();
+    },
+    pause() {
+      handle.engine.handleEvent({ type: 'keydown:Escape' });
+      return handle.engine.snapshot();
+    },
+    resume() {
+      handle.engine.handleEvent({ type: 'keydown:Space' });
+      return handle.engine.snapshot();
+    },
+    stop: handle.stop,
+  };
+
+  window.IV_DEBUG = debug;
+  window.IV_GAME = handle.engine;
+
+  canvas.focus();
 }
 
-function resize() {
-  fitCanvas(renderer, canvas);
+if (typeof document !== 'undefined') {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot, { once: true });
+  } else {
+    boot();
+  }
 }
 
-window.addEventListener('resize', resize);
-resize();
-announce('Iron Vanguard ready. Press Space to launch.');
-requestAnimationFrame(frame);
+export default { start, createGame };
